@@ -159,10 +159,16 @@ def load_version_catalog(target_dir):
           if line.startswith("[") and line.endswith("]"):
             current_section = line[1:-1].strip()
             continue
-          if current_section == "versions" and "=" in line:
+          if current_section in ("versions", "plugins") and "=" in line:
             key, val = line.split("=", 1)
-            val = val.strip().strip('"').strip("'")
-            catalog[key.strip()] = val.strip()
+            key = key.strip().strip('"').strip("'")
+            if current_section == "plugins":
+              id_match = re.search(r'\bid\s*=\s*["\']([^"\']+)["\']', val)
+              if id_match:
+                catalog[f"plugin.{key}"] = id_match.group(1)
+            else:
+              val = val.strip().strip('"').strip("'")
+              catalog[key] = val.strip()
     except Exception as e:  # pylint: disable=broad-exception-caught
       print(
           f"Warning: Failed to load version catalog from {toml_path}: {e}",
@@ -318,6 +324,26 @@ def _filter_by_flavor(data, detected_flavors, prioritized_flavors):
   return data  # Fallback for primitive types
 
 
+def _has_android_application_plugin(content, version_catalog):
+  """Returns whether a Gradle file applies the Android application plugin."""
+  if re.search(GRADLE_APP_PLUGIN_PATTERN, content):
+    return True
+
+  alias_pattern = re.compile(
+      r"alias\s*\(\s*libs\.plugins\.([A-Za-z0-9_.-]+)\s*\)"
+  )
+  disabled_pattern = re.compile(
+      r"\s*(?:\.?apply\s*\(?\s*false\s*\)?|apply\s*=\s*false)"
+  )
+  for match in alias_pattern.finditer(content):
+    if disabled_pattern.match(content[match.end() :]):
+      continue
+    if version_catalog.get(f"plugin.{match.group(1)}") == "com.android.application":
+      return True
+
+  return False
+
+
 def parse_application_modules(
     gradle_files,
     manifest_files,
@@ -338,7 +364,7 @@ def parse_application_modules(
     try:
       with open(g_file, "r", encoding="utf-8", errors="ignore") as f:
         content = f.read()
-        if re.search(GRADLE_APP_PLUGIN_PATTERN, content):
+        if _has_android_application_plugin(content, version_catalog):
           # Found an app module!
           mod_dir = os.path.dirname(g_file)
           mod_name = os.path.basename(mod_dir)
